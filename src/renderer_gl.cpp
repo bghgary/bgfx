@@ -65,6 +65,12 @@ namespace bgfx { namespace gl
 	};
 	BX_STATIC_ASSERT(Attrib::Count == BX_COUNTOF(s_attribName) );
 
+	void setAttribName(Attrib::Enum _enum, const char* _name)
+	{
+		BX_ASSERT(_enum < Attrib::Count, "%d < Attrib::Count %d", _enum, Attrib::Count);
+		s_attribName[_enum] = _name;
+	}
+
 	static const char* s_instanceDataName[] =
 	{
 		"i_data0",
