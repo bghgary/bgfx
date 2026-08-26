@@ -27,6 +27,71 @@ BX_PRAGMA_DIAGNOSTIC_POP()
 
 namespace bgfx { namespace glsl
 {
+	static bool isIdentifierChar(char _ch)
+	{
+		return bx::isAlphaNum(_ch) || '_' == _ch;
+	}
+
+	static std::vector<std::string> replaceExternalSamplerTypes(std::string& _code)
+	{
+		static const char s_externalType[] = "samplerExternalOES";
+		static const char s_sampler2dType[] = "sampler2D";
+
+		std::vector<std::string> names;
+		for (size_t pos = 0; std::string::npos != (pos = _code.find(s_externalType, pos) ); )
+		{
+			const size_t typeEnd = pos + BX_COUNTOF(s_externalType)-1;
+			if ( (0 != pos && isIdentifierChar(_code[pos-1]) )
+			||  (typeEnd < _code.size() && isIdentifierChar(_code[typeEnd]) ) )
+			{
+				pos = typeEnd;
+				continue;
+			}
+
+			const size_t nameBegin = _code.find_first_not_of(" \t\r\n", typeEnd);
+			size_t nameEnd = nameBegin;
+			while (nameEnd < _code.size()
+			&&     isIdentifierChar(_code[nameEnd]) )
+			{
+				++nameEnd;
+			}
+
+			if (std::string::npos != nameBegin
+			&&  nameBegin != nameEnd)
+			{
+				names.emplace_back(_code.substr(nameBegin, nameEnd-nameBegin) );
+			}
+
+			_code.replace(pos, BX_COUNTOF(s_externalType)-1, s_sampler2dType);
+			pos += BX_COUNTOF(s_sampler2dType)-1;
+		}
+
+		return names;
+	}
+
+	static void restoreExternalSamplerTypes(std::string& _code, const std::vector<std::string>& _names)
+	{
+		static const char s_sampler2dType[] = "sampler2D";
+
+		for (const std::string& name : _names)
+		{
+			for (size_t pos = 0; std::string::npos != (pos = _code.find(s_sampler2dType, pos) ); )
+			{
+				const size_t typeEnd = pos + BX_COUNTOF(s_sampler2dType)-1;
+				const size_t nameBegin = _code.find_first_not_of(" \t\r\n", typeEnd);
+				if (nameBegin == _code.find(name, nameBegin)
+				&&  (nameBegin + name.size() == _code.size()
+				||  !isIdentifierChar(_code[nameBegin + name.size()]) ) )
+				{
+					_code.replace(pos, BX_COUNTOF(s_sampler2dType)-1, "samplerExternalOES");
+					break;
+				}
+
+				pos = typeEnd;
+			}
+		}
+	}
+
 	static EShLanguage getLang(char _p)
 	{
 		switch (_p)
@@ -133,7 +198,13 @@ namespace bgfx { namespace glsl
 		shader->setEnvClient(glslang::EShClientOpenGL, glslang::EShTargetOpenGL_450);
 		shader->setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_0);
 
-		const char* shaderStrings[] = { _code.c_str() };
+		std::string code = _code;
+		const std::vector<std::string> externalSamplers = es && EShLangFragment == stage
+			? replaceExternalSamplerTypes(code)
+			: std::vector<std::string>()
+			;
+
+		const char* shaderStrings[] = { code.c_str() };
 		shader->setStrings(
 			  shaderStrings
 			, BX_COUNTOF(shaderStrings)
@@ -284,6 +355,7 @@ namespace bgfx { namespace glsl
 			}
 
 			std::string source = compiler.compile();
+			restoreExternalSamplerTypes(source, externalSamplers);
 
 			if (0 == source.compare(0, 8, "#version") )
 			{

@@ -666,6 +666,12 @@ vec3  rcp(vec3  _a) { return vec3(1.0)/_a; }
 vec4  rcp(vec4  _a) { return vec4(1.0)/_a; }
 #endif // BGFX_SHADER_LANGUAGE_*
 
+#if BGFX_SHADER_LANGUAGE_ESSL
+#	define SAMPLEREXTERNAL(_name, _reg) uniform samplerExternalOES _name
+#else
+#	define SAMPLEREXTERNAL(_name, _reg) SAMPLER2D(_name, _reg)
+#endif // BGFX_SHADER_LANGUAGE_ESSL
+
 vec2 vec2_splat(float _x) { return vec2(_x, _x); }
 vec3 vec3_splat(float _x) { return vec3(_x, _x, _x); }
 vec4 vec4_splat(float _x) { return vec4(_x, _x, _x, _x); }

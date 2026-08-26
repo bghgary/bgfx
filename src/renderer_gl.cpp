@@ -735,6 +735,8 @@ namespace bgfx { namespace gl
 			OES_depth24,
 			OES_depth32,
 			OES_depth_texture,
+			OES_EGL_image_external,
+			OES_EGL_image_external_essl3,
 			OES_element_index_uint,
 			OES_fragment_precision_high,
 			OES_fbo_render_mipmap,
@@ -957,6 +959,8 @@ namespace bgfx { namespace gl
 		{ "OES_depth24",                              false,                             true  },
 		{ "OES_depth32",                              false,                             true  },
 		{ "OES_depth_texture",                        false,                             true  },
+		{ "OES_EGL_image_external",                   false,                             true  },
+		{ "OES_EGL_image_external_essl3",             false,                             true  },
 		{ "OES_element_index_uint",                   false,                             true  },
 		{ "OES_fragment_precision_high",              false,                             true  },
 		{ "OES_fbo_render_mipmap",                    false,                             true  },
@@ -2059,6 +2063,23 @@ namespace bgfx { namespace gl
 		const uint32_t mip = (_flags&BGFX_SAMPLER_MIP_MASK)>>BGFX_SAMPLER_MIP_SHIFT;
 		_magFilter = s_textureFilterMag[mag];
 		_minFilter = s_textureFilterMin[min][_hasMips ? mip+1 : 0];
+	}
+
+	static uint32_t sanitizeExternalSamplerFlags(uint32_t _flags)
+	{
+		const uint32_t filters = _flags & (BGFX_SAMPLER_MIN_POINT|BGFX_SAMPLER_MAG_POINT);
+		_flags &= ~(0
+			| BGFX_SAMPLER_U_MASK
+			| BGFX_SAMPLER_V_MASK
+			| BGFX_SAMPLER_W_MASK
+			| BGFX_SAMPLER_MIN_MASK
+			| BGFX_SAMPLER_MAG_MASK
+			| BGFX_SAMPLER_MIP_MASK
+			| BGFX_SAMPLER_COMPARE_MASK
+			| BGFX_SAMPLER_BORDER_COLOR_MASK
+			| BGFX_SAMPLER_SAMPLE_STENCIL
+			);
+		return _flags | filters | BGFX_SAMPLER_UVW_CLAMP;
 	}
 
 	void updateExtension(const bx::StringView& _name)
@@ -3588,7 +3609,7 @@ namespace bgfx { namespace gl
 
 			ProgramGL& program = m_program[_blitter.m_program.idx];
 			setProgram(program.m_id);
-			setUniform1i(program.m_sampler[0], 0);
+			setUniform1i(program.m_sampler[0].m_loc, 0);
 
 			float proj[16];
 			bx::mtxOrtho(proj, 0.0f, (float)width, (float)height, 0.0f, 0.0f, 1000.0f, 0.0f, g_caps.homogeneousDepth);
@@ -4113,12 +4134,15 @@ namespace bgfx { namespace gl
 			m_textureViewStateCache.invalidate();
 		}
 
-		void setSamplerState(uint32_t _stage, uint32_t _numMips, uint32_t _flags, const float _rgba[4])
+		void setSamplerState(uint32_t _stage, uint32_t _numMips, uint32_t _flags, const float _rgba[4], GLenum _target)
 		{
 			BX_ASSERT(m_samplerObjectSupport, "Cannot use Sampler Objects");
 
 			if (0 == (BGFX_SAMPLER_INTERNAL_DEFAULT & _flags) )
 			{
+				const bool external = GL_TEXTURE_EXTERNAL_OES == _target;
+				_flags = external ? sanitizeExternalSamplerFlags(_flags) : _flags;
+				_numMips = external ? 1 : _numMips;
 				const uint32_t index = (_flags & BGFX_SAMPLER_BORDER_COLOR_MASK) >> BGFX_SAMPLER_BORDER_COLOR_SHIFT;
 
 				_flags &= ~BGFX_SAMPLER_RESERVED_MASK;
@@ -4133,6 +4157,7 @@ namespace bgfx { namespace gl
 
 				murmur.begin();
 				murmur.add(_flags);
+				murmur.add(external);
 				if (!needBorderColor(_flags) )
 				{
 					murmur.add(-1);
@@ -4168,10 +4193,13 @@ namespace bgfx { namespace gl
 						, GL_TEXTURE_WRAP_T
 						, s_textureAddress[(_flags&BGFX_SAMPLER_V_MASK)>>BGFX_SAMPLER_V_SHIFT]
 						) );
-					GL_CHECK(glSamplerParameteri(sampler
-						, GL_TEXTURE_WRAP_R
-						, s_textureAddress[(_flags&BGFX_SAMPLER_W_MASK)>>BGFX_SAMPLER_W_SHIFT]
-						) );
+					if (!external)
+					{
+						GL_CHECK(glSamplerParameteri(sampler
+							, GL_TEXTURE_WRAP_R
+							, s_textureAddress[(_flags&BGFX_SAMPLER_W_MASK)>>BGFX_SAMPLER_W_SHIFT]
+							) );
+					}
 
 					GLenum minFilter;
 					GLenum magFilter;
@@ -4179,32 +4207,38 @@ namespace bgfx { namespace gl
 					GL_CHECK(glSamplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, magFilter) );
 					GL_CHECK(glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, minFilter) );
 
-					if (BX_ENABLED(BGFX_CONFIG_RENDERER_OPENGL) )
+					if (BX_ENABLED(BGFX_CONFIG_RENDERER_OPENGL)
+					&&  !external)
 					{
 						GL_CHECK(glSamplerParameterf(sampler, GL_TEXTURE_LOD_BIAS, float(BGFX_CONFIG_MIP_LOD_BIAS) ) );
 					}
 
-					if (m_borderColorSupport
+					if (!external
+					&&  m_borderColorSupport
 					&&  hasBorderColor)
 					{
 						GL_CHECK(glSamplerParameterfv(sampler, GL_TEXTURE_BORDER_COLOR, _rgba) );
 					}
 
-					if (0 != (_flags & (BGFX_SAMPLER_MIN_ANISOTROPIC|BGFX_SAMPLER_MAG_ANISOTROPIC) )
+					if (!external
+					&&  0 != (_flags & (BGFX_SAMPLER_MIN_ANISOTROPIC|BGFX_SAMPLER_MAG_ANISOTROPIC) )
 					&&  0.0f < m_maxAnisotropy)
 					{
 						GL_CHECK(glSamplerParameterf(sampler, GL_TEXTURE_MAX_ANISOTROPY_EXT, m_maxAnisotropy) );
 					}
 
-					const uint32_t cmpFunc = (_flags&BGFX_SAMPLER_COMPARE_MASK)>>BGFX_SAMPLER_COMPARE_SHIFT;
-					if (0 == cmpFunc)
+					if (!external)
 					{
-						GL_CHECK(glSamplerParameteri(sampler, GL_TEXTURE_COMPARE_MODE, GL_NONE) );
-					}
-					else
-					{
-						GL_CHECK(glSamplerParameteri(sampler, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE) );
-						GL_CHECK(glSamplerParameteri(sampler, GL_TEXTURE_COMPARE_FUNC, s_cmpFunc[cmpFunc]) );
+						const uint32_t cmpFunc = (_flags&BGFX_SAMPLER_COMPARE_MASK)>>BGFX_SAMPLER_COMPARE_SHIFT;
+						if (0 == cmpFunc)
+						{
+							GL_CHECK(glSamplerParameteri(sampler, GL_TEXTURE_COMPARE_MODE, GL_NONE) );
+						}
+						else
+						{
+							GL_CHECK(glSamplerParameteri(sampler, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE) );
+							GL_CHECK(glSamplerParameteri(sampler, GL_TEXTURE_COMPARE_FUNC, s_cmpFunc[cmpFunc]) );
+						}
 					}
 
 					m_samplerStateCache.add(hash, SamplerGL{sampler});
@@ -4338,8 +4372,10 @@ namespace bgfx { namespace gl
 			}
 		}
 
-		void commit(UniformBuffer& _uniformBuffer)
+		void commit(ProgramGL& _program)
 		{
+			UniformBuffer& _uniformBuffer = *_program.m_constantBuffer;
+			_program.resetSamplerTargets();
 			_uniformBuffer.reset();
 
 			for (;;)
@@ -4378,6 +4414,7 @@ namespace bgfx { namespace gl
 				// since they need to marshal an array over from Wasm to JS, so optimize the case when there is exactly one
 				// uniform to upload.
 				case UniformType::Sampler:
+					_program.updateSamplerTargets(loc, num, (int32_t*)data);
 					if (num > 1)
 					{
 						setUniform1iv(loc, num, (int32_t*)data);
@@ -4401,6 +4438,7 @@ namespace bgfx { namespace gl
 					break;
 #else
 				case UniformType::Sampler:
+					_program.updateSamplerTargets(loc, num, (int32_t*)data);
 					setUniform1iv(loc, num, (int32_t*)data);
 					break;
 
@@ -4606,7 +4644,7 @@ namespace bgfx { namespace gl
 
 				updateUniform(m_clearQuadColor.idx, mrtClearColor[0], numMrt * sizeof(float) * 4);
 
-				commit(*program.m_constantBuffer);
+				commit(program);
 
 				GL_CHECK(glDrawArrays(GL_TRIANGLE_STRIP
 					, 0
@@ -4869,6 +4907,7 @@ namespace bgfx { namespace gl
 			GLSL_TYPE(GL_SAMPLER_CUBE_MAP_ARRAY);
 			GLSL_TYPE(GL_INT_SAMPLER_CUBE_MAP_ARRAY);
 			GLSL_TYPE(GL_UNSIGNED_INT_SAMPLER_CUBE_MAP_ARRAY);
+			GLSL_TYPE(GL_SAMPLER_EXTERNAL_OES);
 
 			GLSL_TYPE(GL_IMAGE_1D);
 			GLSL_TYPE(GL_INT_IMAGE_1D);
@@ -4978,6 +5017,7 @@ namespace bgfx { namespace gl
 		case GL_SAMPLER_CUBE_MAP_ARRAY:
 		case GL_INT_SAMPLER_CUBE_MAP_ARRAY:
 		case GL_UNSIGNED_INT_SAMPLER_CUBE_MAP_ARRAY:
+		case GL_SAMPLER_EXTERNAL_OES:
 
 		case GL_IMAGE_1D:
 		case GL_INT_IMAGE_1D:
@@ -5004,6 +5044,31 @@ namespace bgfx { namespace gl
 
 		BX_ASSERT(false, "Unrecognized GL type 0x%04x.", _type);
 		return UniformType::End;
+	}
+
+	void ProgramGL::resetSamplerTargets()
+	{
+		bx::memSet(m_samplerTarget, 0, sizeof(m_samplerTarget) );
+	}
+
+	void ProgramGL::updateSamplerTargets(uint32_t _loc, uint32_t _num, const int32_t* _stage)
+	{
+		for (uint32_t ii = 0; ii < m_numSamplers; ++ii)
+		{
+			const ProgramSamplerGL& sampler = m_sampler[ii];
+			if (uint32_t(sampler.m_loc) == _loc)
+			{
+				for (uint32_t jj = 0; jj < _num; ++jj)
+				{
+					const uint32_t stage = uint32_t(_stage[jj]);
+					if (stage < BX_COUNTOF(m_samplerTarget) )
+					{
+						m_samplerTarget[stage] = sampler.m_target;
+					}
+				}
+				break;
+			}
+		}
 	}
 
 	void ProgramGL::create(const ShaderGL& _vsh, const ShaderGL& _fsh)
@@ -5154,6 +5219,7 @@ namespace bgfx { namespace gl
 
 		m_numPredefined = 0;
 		m_numSamplers = 0;
+		resetSamplerTargets();
 
 		BX_TRACE("Uniforms (%d):", activeUniforms);
 		for (int32_t ii = 0; ii < activeUniforms; ++ii)
@@ -5244,6 +5310,7 @@ namespace bgfx { namespace gl
 			case GL_SAMPLER_CUBE_MAP_ARRAY:
 			case GL_INT_SAMPLER_CUBE_MAP_ARRAY:
 			case GL_UNSIGNED_INT_SAMPLER_CUBE_MAP_ARRAY:
+			case GL_SAMPLER_EXTERNAL_OES:
 
 			case GL_IMAGE_1D:
 			case GL_INT_IMAGE_1D:
@@ -5267,7 +5334,11 @@ namespace bgfx { namespace gl
 				if (m_numSamplers < BX_COUNTOF(m_sampler) )
 				{
 					BX_TRACE("Sampler #%d at location %d.", m_numSamplers, loc);
-					m_sampler[m_numSamplers] = loc;
+					m_sampler[m_numSamplers].m_loc = loc;
+					m_sampler[m_numSamplers].m_target = GL_SAMPLER_EXTERNAL_OES == gltype
+						? GL_TEXTURE_EXTERNAL_OES
+						: GL_NONE
+						;
 					m_numSamplers++;
 				}
 				else
@@ -6156,7 +6227,7 @@ namespace bgfx { namespace gl
 		}
 	}
 
-	void TextureGL::setSamplerState(uint32_t _flags, const float _rgba[4])
+	void TextureGL::setSamplerState(uint32_t _flags, const float _rgba[4], GLenum _target)
 	{
 		if (BX_ENABLED(BGFX_CONFIG_RENDERER_OPENGL)
 		&&  !s_textureFilter[m_textureFormat])
@@ -6174,12 +6245,22 @@ namespace bgfx { namespace gl
 				;
 		}
 
-		const uint32_t flags = (0 != (BGFX_SAMPLER_INTERNAL_DEFAULT & _flags) ? m_flags : _flags) & BGFX_SAMPLER_BITS_MASK;
+		const GLenum target = GL_NONE == _target
+			? (m_target == GL_TEXTURE_2D_MULTISAMPLE ? GL_TEXTURE_2D : m_target)
+			: _target
+			;
+		const bool external = GL_TEXTURE_EXTERNAL_OES == target;
+		const uint32_t requestedFlags = (0 != (BGFX_SAMPLER_INTERNAL_DEFAULT & _flags) ? m_flags : _flags) & BGFX_SAMPLER_BITS_MASK;
+		const uint32_t flags = external
+			? sanitizeExternalSamplerFlags(requestedFlags)
+			: requestedFlags
+			;
 
 		bool hasBorderColor = false;
 		bx::HashMurmur2A murmur;
 		murmur.begin();
 		murmur.add(flags);
+		murmur.add(external);
 		if (NULL != _rgba)
 		{
 			if (BGFX_SAMPLER_U_BORDER == (flags & BGFX_SAMPLER_U_BORDER)
@@ -6194,9 +6275,8 @@ namespace bgfx { namespace gl
 
 		if (hash != m_currentSamplerHash)
 		{
-			const GLenum  target     = m_target == GL_TEXTURE_2D_MULTISAMPLE ? GL_TEXTURE_2D : m_target;
 			const GLenum  targetMsaa = m_target;
-			const uint8_t numMips    = m_numMips;
+			const uint8_t numMips    = external ? 1 : m_numMips;
 
 			GL_CHECK(glTexParameteri(target, GL_TEXTURE_WRAP_S, s_textureAddress[(flags&BGFX_SAMPLER_U_MASK)>>BGFX_SAMPLER_U_SHIFT]) );
 			GL_CHECK(glTexParameteri(target, GL_TEXTURE_WRAP_T, s_textureAddress[(flags&BGFX_SAMPLER_V_MASK)>>BGFX_SAMPLER_V_SHIFT]) );
@@ -6218,32 +6298,38 @@ namespace bgfx { namespace gl
 			GL_CHECK(glTexParameteri(target, GL_TEXTURE_MAG_FILTER, magFilter) );
 			GL_CHECK(glTexParameteri(target, GL_TEXTURE_MIN_FILTER, minFilter) );
 
-			if (BX_ENABLED(BGFX_CONFIG_RENDERER_OPENGL) )
+			if (BX_ENABLED(BGFX_CONFIG_RENDERER_OPENGL)
+			&&  !external)
 			{
 				GL_CHECK(glTexParameterf(target, GL_TEXTURE_LOD_BIAS, float(BGFX_CONFIG_MIP_LOD_BIAS) ) );
 			}
 
-			if (s_renderGL->m_borderColorSupport
+			if (!external
+			&&  s_renderGL->m_borderColorSupport
 			&&  hasBorderColor)
 			{
 				GL_CHECK(glTexParameterfv(target, GL_TEXTURE_BORDER_COLOR, _rgba) );
 			}
 
-			if (0 != (flags & (BGFX_SAMPLER_MIN_ANISOTROPIC|BGFX_SAMPLER_MAG_ANISOTROPIC) )
+			if (!external
+			&&  0 != (flags & (BGFX_SAMPLER_MIN_ANISOTROPIC|BGFX_SAMPLER_MAG_ANISOTROPIC) )
 			&&  0.0f < s_renderGL->m_maxAnisotropy)
 			{
 				GL_CHECK(glTexParameterf(target, GL_TEXTURE_MAX_ANISOTROPY_EXT, s_renderGL->m_maxAnisotropy) );
 			}
 
-			const uint32_t cmpFunc = (flags&BGFX_SAMPLER_COMPARE_MASK)>>BGFX_SAMPLER_COMPARE_SHIFT;
-			if (0 == cmpFunc)
+			if (!external)
 			{
-				GL_CHECK(glTexParameteri(target, GL_TEXTURE_COMPARE_MODE, GL_NONE) );
-			}
-			else
-			{
-				GL_CHECK(glTexParameteri(target, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE) );
-				GL_CHECK(glTexParameteri(target, GL_TEXTURE_COMPARE_FUNC, s_cmpFunc[cmpFunc]) );
+				const uint32_t cmpFunc = (flags&BGFX_SAMPLER_COMPARE_MASK)>>BGFX_SAMPLER_COMPARE_SHIFT;
+				if (0 == cmpFunc)
+				{
+					GL_CHECK(glTexParameteri(target, GL_TEXTURE_COMPARE_MODE, GL_NONE) );
+				}
+				else
+				{
+					GL_CHECK(glTexParameteri(target, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE) );
+					GL_CHECK(glTexParameteri(target, GL_TEXTURE_COMPARE_FUNC, s_cmpFunc[cmpFunc]) );
+				}
 			}
 
 			m_currentSamplerHash = hash;
@@ -6358,23 +6444,30 @@ namespace bgfx { namespace gl
 		return viewId;
 	}
 
-	void TextureGL::commit(uint32_t _stage, uint32_t _flags, const float _palette[][4], uint8_t _firstMip, uint8_t _numMips, uint16_t _firstLayer, uint16_t _numLayers)
+	void TextureGL::commit(uint32_t _stage, uint32_t _flags, const float _palette[][4], uint8_t _firstMip, uint8_t _numMips, uint16_t _firstLayer, uint16_t _numLayers, GLenum _target)
 	{
-		const uint32_t flags = 0 == (BGFX_SAMPLER_INTERNAL_DEFAULT & _flags)
+		uint32_t flags = 0 == (BGFX_SAMPLER_INTERNAL_DEFAULT & _flags)
 			? _flags
 			: uint32_t(m_flags)
 			;
+		const bool external = GL_TEXTURE_EXTERNAL_OES == _target;
+		flags = external ? sanitizeExternalSamplerFlags(flags) : flags;
 		const uint32_t index = (flags & BGFX_SAMPLER_BORDER_COLOR_MASK) >> BGFX_SAMPLER_BORDER_COLOR_SHIFT;
 
 		GLenum target = m_target;
-		const GLuint id = getViewId(_firstMip, _numMips, _firstLayer, _numLayers, &target);
+		const GLuint id = external
+			? m_id
+			: getViewId(_firstMip, _numMips, _firstLayer, _numLayers, &target)
+			;
+		target = external ? _target : target;
 
 		GL_CHECK(glActiveTexture(GL_TEXTURE0+_stage) );
 		GL_CHECK(glBindTexture(target, id) );
 
-		m_depthStencilTexturing |= 0 != (flags & BGFX_SAMPLER_SAMPLE_STENCIL);
+		m_depthStencilTexturing |= !external && 0 != (flags & BGFX_SAMPLER_SAMPLE_STENCIL);
 
-		if (m_depthStencilTexturing)
+		if (!external
+		&&  m_depthStencilTexturing)
 		{
 			BX_WARN(s_renderGL->m_depthStencilTexturingSupported
 				, "BGFX_SAMPLER_SAMPLE_STENCIL requires OpenGL 4.3, OpenGL ES 3.1 or GL_ARB_stencil_texturing; sampling depth instead."
@@ -6391,14 +6484,15 @@ namespace bgfx { namespace gl
 
 		if (s_renderGL->m_samplerObjectSupport)
 		{
-			s_renderGL->setSamplerState(_stage, m_numMips, flags, _palette[index]);
+			s_renderGL->setSamplerState(_stage, external ? 1 : m_numMips, flags, _palette[index], external ? target : GL_NONE);
 		}
 		else
 		{
-			setSamplerState(flags, _palette[index]);
+			setSamplerState(flags, _palette[index], external ? target : GL_NONE);
 		}
 
-		if (id == m_id
+		if (!external
+		&&  id == m_id
 		&&  1 < m_numMips
 		&&  GL_TEXTURE_2D_MULTISAMPLE != m_target)
 		{
@@ -6669,16 +6763,56 @@ namespace bgfx { namespace gl
 
 		if (0 != m_id)
 		{
+			const bool usesExternalSampler = true
+				&& BX_ENABLED(BGFX_CONFIG_RENDERER_OPENGLES)
+				&& GL_FRAGMENT_SHADER == m_type
+				&& !bx::findIdentifierMatch(code, "samplerExternalOES").isEmpty()
+				;
+			const Extension::Enum externalExtension = BX_ENABLED(BGFX_CONFIG_RENDERER_OPENGLES >= 30)
+				? Extension::OES_EGL_image_external_essl3
+				: Extension::OES_EGL_image_external
+				;
+			const char* externalExtensionName = BX_ENABLED(BGFX_CONFIG_RENDERER_OPENGLES >= 30)
+				? "GL_OES_EGL_image_external_essl3"
+				: "GL_OES_EGL_image_external"
+				;
+
+			if (BX_IGNORE_C4127(usesExternalSampler
+			&&  !s_extension[externalExtension].m_supported) )
+			{
+				GL_CHECK(glDeleteShader(m_id) );
+				m_id = 0;
+				BGFX_FATAL(false, bgfx::Fatal::InvalidShader
+					, "samplerExternalOES requires %s."
+					, externalExtensionName
+					);
+				return;
+			}
+
 			// Shaders are compiled without the #version directive, so that the
 			// same shader binary can be used with both GLSL, and ESSL. Shaders
 			// compiled with --raw keep whatever the author wrote. See #2000.
-			if (0 != bx::strCmp(code, "#version", 8) )
+			const bool hasVersion = 0 == bx::strCmp(code, "#version", 8);
+			if (!hasVersion
+			||  usesExternalSampler)
 			{
 				const int32_t tempLen = code.getLength() + (4<<10);
 				char* temp = (char*)BX_STACK_ALLOC(tempLen);
 				bx::StaticMemoryBlockWriter writer(temp, tempLen);
 
-				if (BX_ENABLED(BGFX_CONFIG_RENDERER_OPENGLES) )
+				bx::StringView body = code;
+				if (hasVersion)
+				{
+					const bx::StringView eol = bx::strFind(code, '\n');
+					const int32_t versionLength = eol.isEmpty()
+						? code.getLength()
+						: int32_t(eol.getTerm() - code.getPtr() )
+						;
+					bx::write(&writer, code.getPtr(), versionLength, &err);
+					bx::write(&writer, '\n', &err);
+					body.set(eol.isEmpty() ? code.getTerm() : eol.getPtr() + 1, code.getTerm() );
+				}
+				else if (BX_ENABLED(BGFX_CONFIG_RENDERER_OPENGLES) )
 				{
 					// Images, and storage buffers, require ESSL 3.10. Binding
 					// qualifier is not necessarily first in layout list, for
@@ -6694,7 +6828,12 @@ namespace bgfx { namespace gl
 					bx::write(&writer, &err, "#version %d\n", BGFX_CONFIG_RENDERER_OPENGL*10);
 				}
 
-				bx::write(&writer, code.getPtr(), code.getLength(), &err);
+				if (usesExternalSampler)
+				{
+					bx::write(&writer, &err, "#extension %s : require\n", externalExtensionName);
+				}
+
+				bx::write(&writer, body.getPtr(), body.getLength(), &err);
 				bx::write(&writer, '\0', &err);
 
 				code.set(temp);
@@ -7753,7 +7892,7 @@ namespace bgfx { namespace gl
 							if (constantsChanged
 							&&  NULL != program.m_constantBuffer)
 							{
-								commit(*program.m_constantBuffer);
+								commit(program);
 							}
 
 							viewState.setPredefined<1>(this, view, program, _render, compute);
@@ -8209,7 +8348,7 @@ namespace bgfx { namespace gl
 					if (constantsChanged
 					&&  NULL != program.m_constantBuffer)
 					{
-						commit(*program.m_constantBuffer);
+						commit(program);
 					}
 
 					viewState.setPredefined<1>(this, view, program, _render, draw);
@@ -8270,7 +8409,7 @@ namespace bgfx { namespace gl
 									case Binding::Texture:
 										{
 											TextureGL& texture = m_textures[bind.m_idx];
-											texture.commit(stage, bind.m_samplerFlags, _render->m_colorPalette, bind.m_firstMip, bind.m_numMips, bind.m_firstLayer, bind.m_numLayers);
+											texture.commit(stage, bind.m_samplerFlags, _render->m_colorPalette, bind.m_firstMip, bind.m_numMips, bind.m_firstLayer, bind.m_numLayers, program.m_samplerTarget[stage]);
 										}
 										break;
 

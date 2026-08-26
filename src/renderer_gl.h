@@ -839,6 +839,14 @@ typedef double GLdouble;
 #	define GL_SAMPLER_CUBE_MAP_ARRAY_SHADOW 0x900D
 #endif // GL_SAMPLER_CUBE_MAP_ARRAY_SHADOW
 
+#ifndef GL_TEXTURE_EXTERNAL_OES
+#	define GL_TEXTURE_EXTERNAL_OES 0x8D65
+#endif // GL_TEXTURE_EXTERNAL_OES
+
+#ifndef GL_SAMPLER_EXTERNAL_OES
+#	define GL_SAMPLER_EXTERNAL_OES 0x8D66
+#endif // GL_SAMPLER_EXTERNAL_OES
+
 #ifndef GL_INT_SAMPLER_CUBE_MAP_ARRAY
 #	define GL_INT_SAMPLER_CUBE_MAP_ARRAY 0x900E
 #endif // GL_INT_SAMPLER_CUBE_MAP_ARRAY
@@ -1439,8 +1447,8 @@ namespace bgfx { namespace gl
 		void overrideInternal(uintptr_t _ptr);
 		void update(uint8_t _side, uint8_t _mip, const Rect& _rect, uint16_t _z, uint16_t _depth, uint16_t _pitch, const Memory* _mem);
 		void clear(uint8_t _mip, uint8_t _numMips, uint16_t _layer, uint16_t _numLayers);
-		void setSamplerState(uint32_t _flags, const float _rgba[4]);
-		void commit(uint32_t _stage, uint32_t _flags, const float _palette[][4], uint8_t _firstMip, uint8_t _numMips, uint16_t _firstLayer, uint16_t _numLayers);
+		void setSamplerState(uint32_t _flags, const float _rgba[4], GLenum _target = GL_NONE);
+		void commit(uint32_t _stage, uint32_t _flags, const float _palette[][4], uint8_t _firstMip, uint8_t _numMips, uint16_t _firstLayer, uint16_t _numLayers, GLenum _target = GL_NONE);
 		GLenum getViewTarget(uint16_t _numLayers, bool _layered = false) const;
 		GLuint getViewId(uint8_t _firstMip, uint8_t _numMips, uint16_t _firstLayer, uint16_t _numLayers, GLenum* _target = NULL, bool _layered = false);
 		void resolve(uint8_t _resolve) const;
@@ -1529,6 +1537,12 @@ namespace bgfx { namespace gl
 		Attachment m_attachment[BGFX_CONFIG_MAX_FRAME_BUFFER_ATTACHMENTS];
 	};
 
+	struct ProgramSamplerGL
+	{
+		GLint m_loc;
+		GLenum m_target;
+	};
+
 	struct ProgramGL
 	{
 		ProgramGL()
@@ -1537,6 +1551,7 @@ namespace bgfx { namespace gl
 			, m_numPredefined(0)
 		{
 			m_instanceData[0] = -1;
+			bx::memSet(m_samplerTarget, 0, sizeof(m_samplerTarget) );
 		}
 
 		void create(const ShaderGL& _vsh, const ShaderGL& _fsh);
@@ -1549,6 +1564,8 @@ namespace bgfx { namespace gl
 		void bindAttributesEnd();
 		void unbindInstanceData() const;
 		void unbindAttributes();
+		void resetSamplerTargets();
+		void updateSamplerTargets(uint32_t _loc, uint32_t _num, const int32_t* _stage);
 
 		GLuint m_id;
 
@@ -1560,7 +1577,8 @@ namespace bgfx { namespace gl
 		GLint    m_instanceData[BGFX_CONFIG_MAX_INSTANCE_DATA_COUNT+1];
 		uint16_t m_instanceOffset[BGFX_CONFIG_MAX_INSTANCE_DATA_COUNT];
 
-		GLint m_sampler[BGFX_CONFIG_MAX_TEXTURE_SAMPLERS];
+		ProgramSamplerGL m_sampler[BGFX_CONFIG_MAX_TEXTURE_SAMPLERS];
+		GLenum m_samplerTarget[BGFX_CONFIG_MAX_TEXTURE_SAMPLERS];
 		uint8_t m_numSamplers;
 
 		UniformBuffer* m_constantBuffer;
